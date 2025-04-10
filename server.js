@@ -1,31 +1,27 @@
 var static = require('node-static');
 var http = require('http');
+
+const PORT = 1234
+
 var file = new(static.Server)();
+
 var app = http.createServer(function (req, res) {
 	file.serve(req, res);
-}).listen(1234);
+}).listen(PORT);
 
 var io = require('socket.io').listen(app);
 
 io.sockets.on('connection', function (socket) {
-	function log() {
-		var array = [">>> "];
-		for(var i = 0; i < arguments.length; i++) {
-			array.push(arguments[i]);
-		}
-		socket.emit('log', array);
-	}
-
 	socket.on('message', function (message) {
-		log('Got message: ', message);
+		console.log('Got message: ', message);
 		socket.broadcast.emit('message', message); // should be room only
 	});
 
 	socket.on('create or join', function (room) {
 		var numClients = io.sockets.clients(room).length;
 
-		log('Room ' + room + ' has ' + numClients + ' client(s)');
-		log('Request to create or join room', room);
+		console.log('Room ' + room + ' has ' + numClients + ' client(s)');
+		console.log('Request to create or join room', room);
 
 		if(numClients == 0) {
 			socket.join(room);
@@ -46,3 +42,5 @@ io.sockets.on('connection', function (socket) {
 		socket.broadcast.emit('broadcast(): client ' + socket.id + ' joined room ' + room);
 	});
 });
+
+console.log(`Server running at http://127.0.0.1:${PORT}/`);

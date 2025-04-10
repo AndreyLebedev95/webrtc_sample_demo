@@ -7,105 +7,141 @@
         body { height: 100%; margin: 0; background: #111; text-align: center; }
         #remoteVideo { height: 70%; margin-top: 5%; background: #000; }
         #localVideo { width: 20%; position: absolute; right: 1.1em; bottom: 1em; border: 1px solid #333; background: #000; }
-        #callButton { position: absolute; display: none; left: 50%; font-size: 2em; bottom: 5%; border-radius: 1em; }
+        #callButton { position: absolute; display: inline-block; left: 50%; font-size: 2em; bottom: 5%; border-radius: 1em; }
     </style>
 </head>
 <script src="/socket.io/socket.io.js"></script>
 
 <video id="localVideo" autoplay muted></video>
 <video id="remoteVideo" autoplay></video>
-<button id="callButton" onclick="createOffer()">✆</button>
+<button id="callButton" disabled>✆</button>
 
 <script>
-    var PeerConnection = window.mozRTCPeerConnection || window.webkitRTCPeerConnection;
-    var IceCandidate = window.mozRTCIceCandidate || window.RTCIceCandidate;
-    var SessionDescription = window.mozRTCSessionDescription || window.RTCSessionDescription;
-    navigator.getUserMedia = navigator.getUserMedia || navigator.mozGetUserMedia || navigator.webkitGetUserMedia;
+    (async () => {
+        const PeerConnection = window.RTCPeerConnection || window.mozRTCPeerConnection || window.webkitRTCPeerConnection
+        const IceCandidate = window.mozRTCIceCandidate || window.RTCIceCandidate
+        const SessionDescription = window.mozRTCSessionDescription || window.RTCSessionDescription
 
-    var pc; // PeerConnection
+        const handleLocalIceCandidateCreated = (event) => {
+            console.log('created ice candidate')
 
-
-    // Step 1. getUserMedia
-    navigator.getUserMedia(
-            { audio: true, video: true },
-            gotStream,
-            function(error) { console.log(error) }
-    );
-
-    function gotStream(stream) {
-        document.getElementById("callButton").style.display = 'inline-block';
-        document.getElementById("localVideo").src = URL.createObjectURL(stream);
-
-        pc = new PeerConnection(null);
-        pc.addStream(stream);
-        pc.onicecandidate = gotIceCandidate;
-        pc.onaddstream = gotRemoteStream;
-    }
-
-
-    // Step 2. createOffer
-    function createOffer() {
-        pc.createOffer(
-                gotLocalDescription,
-                function(error) { console.log(error) },
-                { 'mandatory': { 'OfferToReceiveAudio': true, 'OfferToReceiveVideo': true } }
-        );
-    }
-
-
-    // Step 3. createAnswer
-    function createAnswer() {
-        pc.createAnswer(
-                gotLocalDescription,
-                function(error) { console.log(error) },
-                { 'mandatory': { 'OfferToReceiveAudio': true, 'OfferToReceiveVideo': true } }
-        );
-    }
-
-
-    function gotLocalDescription(description){
-        pc.setLocalDescription(description);
-        sendMessage(description);
-    }
-
-    function gotIceCandidate(event){
-        if (event.candidate) {
-            sendMessage({
-                type: 'candidate',
-                label: event.candidate.sdpMLineIndex,
-                id: event.candidate.sdpMid,
-                candidate: event.candidate.candidate
-            });
+            if (event.candidate) {
+                sendMessage({
+                    type: 'candidate',
+                    label: event.candidate.sdpMLineIndex,
+                    id: event.candidate.sdpMid,
+                    candidate: event.candidate.candidate,
+                })
+            }
         }
-    }
 
-    function gotRemoteStream(event){
-        document.getElementById("remoteVideo").src = URL.createObjectURL(event.stream);
-    }
-
-
-    ////////////////////////////////////////////////
-    // Socket.io
-
-    var socket = io.connect('', {port: 1234});
-
-    function sendMessage(message){
-        socket.emit('message', message);
-    }
-
-    socket.on('message', function (message){
-        if (message.type === 'offer') {
-            pc.setRemoteDescription(new SessionDescription(message));
-            createAnswer();
+        const handleRemoteSteam = (event) => {
+            document.getElementById("remoteVideo").srcObject = event.stream
         }
-        else if (message.type === 'answer') {
-            pc.setRemoteDescription(new SessionDescription(message));
-        }
-        else if (message.type === 'candidate') {
-            var candidate = new IceCandidate({sdpMLineIndex: message.label, candidate: message.candidate});
-            pc.addIceCandidate(candidate);
-        }
-    });
 
+        // Step 0. initialize transport
+        // Socket.io
+
+        var socket = io.connect('', {port: 1234})
+
+        function sendMessage(message){
+            socket.emit('message', message)
+        }
+
+        socket.on('message', function (message){
+            if (message.type === 'offer') {
+                processPeerOffer(message)
+            }
+            else if (message.type === 'answer') {
+                console.log('setRemoteDescription from answer')
+                pc.setRemoteDescription(new SessionDescription(message))
+            }
+            else if (message.type === 'candidate') {
+                console.log('addIceCandidate')
+                const candidate = new IceCandidate({sdpMLineIndex: message.label, candidate: message.candidate})
+                
+                pc.addIceCandidate(candidate)
+            }
+        })
+
+        // Step 1. obtain user media stream and create RTCPeerConnection
+        const getMediaStream = async () => {
+            const devices = await navigator.mediaDevices.enumerateDevices()
+
+            const hasAudio = devices.some(device => device.kind === 'audioinput')
+            const hasVideo = devices.some(device => device.kind === 'videoinput')
+
+            if (!hasAudio && !hasVideo) {
+                alert('No media device found')
+
+                reject('No media device found')
+            }
+            
+            try {
+                return navigator.mediaDevices.getUserMedia({
+                    audio: hasAudio,
+                    video: hasVideo,
+                })
+            } catch (error) {
+                console.log('getUserMedia error')
+                console.error(error)
+                
+                throw error
+            }
+        }
+
+        const pc = new PeerConnection(null)
+
+        const stream = await getMediaStream()
+
+        document.getElementById("localVideo").srcObject = stream
+
+        pc.addStream(stream)
+        pc.onicecandidate = handleLocalIceCandidateCreated
+        pc.onaddstream = handleRemoteSteam
+
+        const callButton = document.getElementById("callButton")
+        
+        callButton.removeAttribute('disabled')
+
+        // Step 2. create offer and send to other peer to initialize call
+        const startCall = async () => {
+            console.log('creating offer')
+            const offer = await pc.createOffer({
+                mandatory: {
+                    OfferToReceiveAudio: true,
+                    OfferToReceiveVideo: true,
+                },
+            })
+
+            console.log('set local description from offer')
+            pc.setLocalDescription(offer)
+
+            console.log('sending offer')
+            sendMessage(offer)
+        }
+
+        callButton.addEventListener('click', startCall)
+
+        // Step 3. receive offer, create answer and send to other peer
+        const processPeerOffer = async(message) => {
+            console.log('setRemoteDescription from offer')
+            pc.setRemoteDescription(new SessionDescription(message))
+
+            console.log('creating answer')
+            const answer = await pc.createAnswer({
+                mandatory: {
+                    OfferToReceiveAudio: true,
+                    OfferToReceiveVideo: true,
+                },
+            })
+
+            console.log('set local description from answer')
+            pc.setLocalDescription(answer)
+
+            console.log('sending answer')
+            sendMessage(answer)
+        }
+    })()
 </script>
 </html>
